@@ -1,0 +1,124 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Sora:wght@500;600;700;800&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --wn-bg-primary: #080a0c;
+  --wn-accent-primary: #39ff14;
+  --wn-accent-secondary: #00f0ff;
+  --wn-neutral-secondary: #1c2128;
+  --wn-success: #00ff94;
+  --wn-alert: #ff3e3e;
+  --brand: #39ff14;
+}
+
+body {
+  background-color: var(--wn-bg-primary);
+  font-family: "Inter", sans-serif;
+}
+
+/* small helpers */
+.container{max-width:1200px;margin:0 auto}
+
+.font-sora {
+  font-family: "Sora", sans-serif;
+}
+
+@keyframes wn-neon-drift-a {
+  0% {
+    transform: translate3d(-8%, -6%, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(7%, 8%, 0) scale(1.08);
+  }
+  100% {
+    transform: translate3d(-8%, -6%, 0) scale(1);
+  }
+}
+
+@keyframes wn-neon-drift-b {
+  0% {
+    transform: translate3d(6%, -4%, 0) scale(1.02);
+  }
+  50% {
+    transform: translate3d(-8%, 6%, 0) scale(1.1);
+  }
+  100% {
+    transform: translate3d(6%, -4%, 0) scale(1.02);
+  }
+}
+
+@keyframes wn-card-glow {
+  0% {
+    box-shadow:
+      0 0 0 1px rgba(57, 255, 20, 0.2),
+      0 20px 70px rgba(0, 0, 0, 0.55),
+      0 0 26px rgba(57, 255, 20, 0.2);
+  }
+  50% {
+    box-shadow:
+      0 0 0 1px rgba(57, 255, 20, 0.28),
+      0 20px 70px rgba(0, 0, 0, 0.6),
+      0 0 38px rgba(57, 255, 20, 0.3);
+  }
+  100% {
+    box-shadow:
+      0 0 0 1px rgba(57, 255, 20, 0.2),
+      0 20px 70px rgba(0, 0, 0, 0.55),
+      0 0 26px rgba(57, 255, 20, 0.2);
+  }
+}
+
+.auth-cinematic-shell {
+  position: relative;
+  min-height: 100vh;
+  overflow: hidden;
+  background: #080a0c;
+}
+
+.auth-cinematic-shell::before,
+.auth-cinematic-shell::after {
+  content: "";
+  position: absolute;
+  inset: -20%;
+  pointer-events: none;
+  filter: blur(70px);
+}
+
+.auth-cinematic-shell::before {
+  background:
+    radial-gradient(circle at 15% 30%, rgba(57, 255, 20, 0.3) 0%, rgba(57, 255, 20, 0) 45%),
+    radial-gradient(circle at 78% 36%, rgba(0, 240, 255, 0.28) 0%, rgba(0, 240, 255, 0) 48%);
+  animation: wn-neon-drift-a 12s ease-in-out infinite;
+}
+
+.auth-cinematic-shell::after {
+  background:
+    radial-gradient(circle at 65% 70%, rgba(0, 255, 148, 0.16) 0%, rgba(0, 255, 148, 0) 46%),
+    radial-gradient(circle at 30% 70%, rgba(0, 240, 255, 0.14) 0%, rgba(0, 240, 255, 0) 44%);
+  animation: wn-neon-drift-b 14s ease-in-out infinite;
+}
+
+.auth-glass-card {
+  border-radius: 28px;
+  border: 1px solid rgba(57, 255, 20, 0.42);
+  background: rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  animation: wn-card-glow 3.8s ease-in-out infinite;
+}
+
+.auth-input {
+  width: 100%;
+  border: 0;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.09);
+  color: #ffffff;
+  padding: 0.78rem 1rem;
+}
+
+.auth-input::placeholder {
+  color: rgba(255, 255, 255, 0.45);
+}
