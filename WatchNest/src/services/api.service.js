@@ -9,27 +9,27 @@ export const videoService = {
     api.get(`/videos/${videoId}`),
 
   uploadVideo: (formData) =>
-    api.post('/videos', formData, {
+    api.post('/videos/upload', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     }),
 
   updateVideo: (videoId, data) =>
-    api.patch(`/videos/${videoId}`, data),
+    api.patch(`/videos/${videoId}/update`, data),
 
   deleteVideo: (videoId) =>
-    api.delete(`/videos/${videoId}`),
+    api.delete(`/videos/${videoId}/delete`),
 
   togglePublishStatus: (videoId) =>
     api.patch(`/videos/${videoId}/toggle-publish`),
 
-  getUserVideos: (userId) =>
-    api.get(`/videos/user/${userId}`),
+  getUserVideos: (page = 1, limit = 10) =>
+    api.get('/videos/my-videos', { params: { page, limit } }),
 
   incrementViews: (videoId) =>
-    api.patch(`/videos/${videoId}/view`),
+    api.post(`/videos/${videoId}/views`),
 
   searchVideos: (query, page = 1) =>
-    api.get('/videos', { params: { search: query, page } }),
+    api.get('/videos', { params: { query, page } }),
 };
 
 // Comment Service
