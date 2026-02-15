@@ -1,4 +1,4 @@
-import api from './api';
+import api from '../utils/api';
 
 // Video Service
 export const videoService = {
