@@ -1,4 +1,4 @@
-import api from '../utils/api';
+import api from './api';
 
 // Video Service
 export const videoService = {
@@ -9,7 +9,7 @@ export const videoService = {
     api.get(`/videos/${videoId}`),
 
   uploadVideo: (formData) =>
-    api.post('/videos/upload', formData, {
+    api.post('/videos', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     }),
 
@@ -23,13 +23,13 @@ export const videoService = {
     api.patch(`/videos/${videoId}/toggle-publish`),
 
   getUserVideos: (userId) =>
-    api.get('/videos/my-videos'),
+    api.get(`/videos/user/${userId}`),
 
   incrementViews: (videoId) =>
-    api.post(`/videos/${videoId}/views`),
+    api.patch(`/videos/${videoId}/view`),
 
   searchVideos: (query, page = 1) =>
-    api.get('/videos', { params: { query, page } }),
+    api.get('/videos', { params: { search: query, page } }),
 };
 
 // Comment Service
