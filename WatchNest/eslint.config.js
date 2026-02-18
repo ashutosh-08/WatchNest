@@ -27,6 +27,8 @@ export default [
         console: 'readonly',
         URL: 'readonly',
         FormData: 'readonly',
+        fetch: 'readonly',
+        alert: 'readonly',
       },
     },
     settings: {

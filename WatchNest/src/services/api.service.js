@@ -30,6 +30,12 @@ export const videoService = {
 
   searchVideos: (query, page = 1) =>
     api.get('/videos', { params: { query, page } }),
+
+  getVideoStoryboard: (videoId) =>
+    api.get(`/videos/${videoId}/storyboard`),
+
+  retryVideoStoryboard: (videoId) =>
+    api.post(`/videos/${videoId}/storyboard/retry`),
 };
 
 // Comment Service

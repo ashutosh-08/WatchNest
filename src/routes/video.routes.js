@@ -1,7 +1,18 @@
 import { Router } from "express";
 import { verifyJWT } from "../middlewares/auth.middleware.js";
 import { upload } from "../middlewares/multer.middleware.js";
-import { deleteVideo, getVideobyId, togglePublishStatus, UpdateVideo, UploadVideo, getAllVideos, getUserVideos, incrementVideoViews } from "../controllers/video.controller.js";
+import {
+    deleteVideo,
+    getVideobyId,
+    togglePublishStatus,
+    UpdateVideo,
+    UploadVideo,
+    getAllVideos,
+    getUserVideos,
+    incrementVideoViews,
+    getVideoStoryboard,
+    retryVideoStoryboard,
+} from "../controllers/video.controller.js";
 
 const router = Router();
 
@@ -25,6 +36,8 @@ router.route("/upload").post(verifyJWT,
 
 // Get user's own videos (requires auth)
 router.route("/my-videos").get(verifyJWT, getUserVideos);
+router.route("/:VideoID/storyboard").get(getVideoStoryboard);
+router.route("/:VideoID/storyboard/retry").post(verifyJWT, retryVideoStoryboard);
 
 // Get video by ID (public)
 router.route("/:VideoID").get(getVideobyId);

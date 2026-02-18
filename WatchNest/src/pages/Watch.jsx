@@ -6,6 +6,53 @@ import { useAuth } from '../context/AuthContext'
 
 const COMMENT_EMOJIS = ['😀', '😂', '😍', '🔥', '👏', '👍', '❤️', '🎉', '😎', '🤩', '🙌', '💯']
 
+const formatClock = (seconds = 0) => {
+  const safe = Math.max(0, Math.floor(seconds))
+  const mins = Math.floor(safe / 60)
+  const secs = String(safe % 60).padStart(2, '0')
+  return `${mins}:${secs}`
+}
+
+const parseStoryboardVtt = (vttText = '') => {
+  const blocks = vttText
+    .split(/\r?\n\r?\n/)
+    .map((block) => block.trim())
+    .filter(Boolean)
+    .filter((block) => !block.startsWith('WEBVTT'))
+
+  const toSeconds = (timeText) => {
+    const [h = '0', m = '0', s = '0'] = timeText.trim().split(':')
+    return Number(h) * 3600 + Number(m) * 60 + Number(s)
+  }
+
+  const cues = []
+  for (const block of blocks) {
+    const lines = block.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+    if (lines.length < 2) continue
+    const timingLine = lines[0].includes('-->') ? lines[0] : lines[1]
+    const assetLine = lines[0].includes('-->') ? lines[1] : lines[2]
+    if (!timingLine || !assetLine || !timingLine.includes('-->')) continue
+
+    const [startText, endText] = timingLine.split('-->').map((part) => part.trim())
+    const [urlPart, xywhPart] = assetLine.split('#xywh=')
+    if (!urlPart || !xywhPart) continue
+    const [x, y, w, h] = xywhPart.split(',').map((value) => Number(value))
+    if ([x, y, w, h].some((value) => Number.isNaN(value))) continue
+
+    cues.push({
+      start: toSeconds(startText),
+      end: toSeconds(endText),
+      url: urlPart.trim(),
+      x,
+      y,
+      w,
+      h,
+    })
+  }
+
+  return cues
+}
+
 export default function Watch(){
   const {id} = useParams()
   const { user, isAuthenticated } = useAuth()
@@ -24,8 +71,17 @@ export default function Watch(){
   const [showBountyToast, setShowBountyToast] = useState(false)
   const [bountyPulse, setBountyPulse] = useState(false)
   const [bountyProgress, setBountyProgress] = useState(0)
+  const [storyboardCues, setStoryboardCues] = useState([])
+  const [storyboardReady, setStoryboardReady] = useState(false)
+  const [durationSec, setDurationSec] = useState(0)
+  const [currentTimeSec, setCurrentTimeSec] = useState(0)
+  const [hoverTimeSec, setHoverTimeSec] = useState(0)
+  const [hoverPercent, setHoverPercent] = useState(0)
+  const [showHoverPreview, setShowHoverPreview] = useState(false)
   const subscribeButtonRef = useRef(null)
   const bountyBarRef = useRef(null)
+  const videoRef = useRef(null)
+  const seekBarRef = useRef(null)
 
   const getAvatarSrc = (avatar, name = 'User') => {
     if (avatar) return avatar
@@ -93,6 +149,78 @@ export default function Watch(){
     fetchRecommendedVideos()
   }, [id])
 
+  useEffect(() => {
+    setStoryboardCues([])
+    setStoryboardReady(false)
+    const storyboard = video?.storyboard
+    if (!storyboard || storyboard.status !== 'ready' || !storyboard.vttUrl) return
+
+    const loadStoryboard = async () => {
+      try {
+        const res = await fetch(storyboard.vttUrl)
+        const text = await res.text()
+        const cues = parseStoryboardVtt(text)
+        setStoryboardCues(cues)
+        setStoryboardReady(cues.length > 0)
+      } catch (error) {
+        console.error('Failed to load storyboard VTT:', error)
+        setStoryboardCues([])
+        setStoryboardReady(false)
+      }
+    }
+
+    loadStoryboard()
+  }, [video?.storyboard?.status, video?.storyboard?.vttUrl, id])
+
+  const getCueAtTime = (timeSec) =>
+    storyboardCues.find((cue) => timeSec >= cue.start && timeSec < cue.end) ||
+    storyboardCues[storyboardCues.length - 1]
+
+  const currentProgressPercent =
+    durationSec > 0 ? Math.min(100, Math.max(0, (currentTimeSec / durationSec) * 100)) : 0
+
+  const handleTimeUpdate = () => {
+    const videoEl = videoRef.current
+    if (!videoEl) return
+    setCurrentTimeSec(videoEl.currentTime || 0)
+  }
+
+  const handleLoadedMetadata = () => {
+    const videoEl = videoRef.current
+    if (!videoEl) return
+    setDurationSec(videoEl.duration || Number(video?.duration) || 0)
+  }
+
+  const updateHoverFromClientX = (clientX) => {
+    const barEl = seekBarRef.current
+    if (!barEl) return 0
+    const rect = barEl.getBoundingClientRect()
+    if (rect.width <= 0) return 0
+    const offsetX = Math.min(Math.max(clientX - rect.left, 0), rect.width)
+    const percent = offsetX / rect.width
+    const targetTime = percent * (durationSec || 0)
+    setHoverPercent(percent * 100)
+    setHoverTimeSec(targetTime)
+    return targetTime
+  }
+
+  const handleSeekMouseMove = (event) => {
+    updateHoverFromClientX(event.clientX)
+    setShowHoverPreview(true)
+  }
+
+  const handleSeekMouseLeave = () => {
+    setShowHoverPreview(false)
+  }
+
+  const handleSeekClick = (event) => {
+    const videoEl = videoRef.current
+    if (!videoEl) return
+    const targetTime = updateHoverFromClientX(event.clientX)
+    videoEl.currentTime = targetTime
+    setCurrentTimeSec(targetTime)
+  }
+
   const handleAddComment = async (e) => {
     e.preventDefault()
     if (!commentText.trim() || !isAuthenticated) return
@@ -116,6 +244,7 @@ export default function Watch(){
   }
 
   const videoOwner = resolveOwnerData(video)
+  const hoverCue = getCueAtTime(hoverTimeSec)
   const ownerName = videoOwner.fullName || videoOwner.username || 'Unknown creator'
   const ownerAvatar = videoOwner.avatar
   const ownerUsername = videoOwner.username
@@ -262,11 +391,55 @@ export default function Watch(){
         {/* Video Player */}
         <div className="bg-black rounded-lg overflow-hidden mb-6">
           <video 
+            ref={videoRef}
             controls 
             src={video.videoFile} 
             className="w-full h-[480px] bg-black"
             onPlay={() => videoService.incrementViews(id)}
+            onTimeUpdate={handleTimeUpdate}
+            onLoadedMetadata={handleLoadedMetadata}
           />
+          {storyboardReady && (
+            <div className="px-4 pt-3 pb-4 border-t border-white/10 bg-[#0f141a]">
+              <div
+                ref={seekBarRef}
+                className="relative h-12 cursor-pointer"
+                onMouseMove={handleSeekMouseMove}
+                onMouseLeave={handleSeekMouseLeave}
+                onClick={handleSeekClick}
+              >
+                <div className="absolute left-0 right-0 bottom-0 h-2 rounded-full bg-white/20">
+                  <div
+                    className="h-full rounded-full bg-[#39FF14]"
+                    style={{ width: `${currentProgressPercent}%` }}
+                  />
+                </div>
+
+                {showHoverPreview && hoverCue && (
+                  <div
+                    className="absolute bottom-4 -translate-x-1/2 pointer-events-none z-20"
+                    style={{ left: `${hoverPercent}%` }}
+                  >
+                    <div
+                      className="rounded-md border border-white/20 shadow-[0_12px_28px_rgba(0,0,0,0.5)] bg-black"
+                      style={{
+                        width: `${hoverCue.w}px`,
+                        height: `${hoverCue.h}px`,
+                        backgroundImage: `url(${hoverCue.url})`,
+                        backgroundRepeat: 'no-repeat',
+                        backgroundPosition: `-${hoverCue.x}px -${hoverCue.y}px`,
+                      }}
+                    />
+                    <p className="text-[11px] text-center text-white mt-1">{formatClock(hoverTimeSec)}</p>
+                  </div>
+                )}
+              </div>
+              <div className="mt-1 flex justify-between text-xs text-white/70">
+                <span>{formatClock(currentTimeSec)}</span>
+                <span>{formatClock(durationSec || video.duration || 0)}</span>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Video Info */}

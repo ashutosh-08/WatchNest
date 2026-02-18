@@ -33,6 +33,31 @@ const videoSchema= new Schema({
     owner:{
         type: Schema.Types.ObjectId,
         ref:"User",
+    },
+    storyboardStatus: {
+        type: String,
+        enum: ["none", "processing", "ready", "failed"],
+        default: "none",
+    },
+    storyboardSpriteUrl: {
+        type: String,
+        default: "",
+    },
+    storyboardVttUrl: {
+        type: String,
+        default: "",
+    },
+    storyboardIntervalSec: {
+        type: Number,
+        default: 5,
+    },
+    storyboardThumbWidth: {
+        type: Number,
+        default: 160,
+    },
+    storyboardThumbHeight: {
+        type: Number,
+        default: 90,
     }
 },{timestamps:true})
 

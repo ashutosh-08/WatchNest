@@ -3,6 +3,7 @@ import { asyncHandler } from "../utils/asyncHandler.js";
 import { ApiError } from "../utils/ApiError.js";
 import { ApiResponse } from "../utils/ApiResponse.js";
 import { uploadOnCloudinary } from "../utils/cloudinary.js";
+import { enqueueStoryboardGeneration, isStoryboardEnabled } from "../services/storyboard.service.js";
 import mongoose from "mongoose";
 
 const toHttps = (url) => {
@@ -21,6 +22,16 @@ const normalizeVideoMedia = (videoDoc) => {
     const video = typeof videoDoc.toObject === "function" ? videoDoc.toObject() : { ...videoDoc };
     video.videoFile = mediaUrl(video.videoFile);
     video.thumbnail = mediaUrl(video.thumbnail);
+    video.storyboardSpriteUrl = mediaUrl(video.storyboardSpriteUrl);
+    video.storyboardVttUrl = mediaUrl(video.storyboardVttUrl);
+    video.storyboard = {
+        status: video.storyboardStatus || "none",
+        spriteUrl: video.storyboardSpriteUrl || "",
+        vttUrl: video.storyboardVttUrl || "",
+        intervalSec: video.storyboardIntervalSec || 5,
+        thumbWidth: video.storyboardThumbWidth || 160,
+        thumbHeight: video.storyboardThumbHeight || 90,
+    };
     if (video.ownerDetails) {
         video.ownerDetails = {
             ...video.ownerDetails,
@@ -34,6 +45,12 @@ const normalizeVideoMedia = (videoDoc) => {
         };
     }
     return video;
+};
+
+const getValidatedVideoId = (VideoID) => {
+    if (!VideoID) throw new ApiError(400, "Video ID is required!");
+    if (!mongoose.Types.ObjectId.isValid(VideoID)) throw new ApiError(400, "Invalid Video ID!");
+    return VideoID;
 };
 
 // Upload Video on App
@@ -67,6 +84,7 @@ const UploadVideo = asyncHandler(async (req, res) => {
     const user = req.user._id;
 
     // Create video in database
+    const storyboardEnabled = isStoryboardEnabled();
     const VideoData = await Video.create({
         title,
         description,
@@ -76,7 +94,28 @@ const UploadVideo = asyncHandler(async (req, res) => {
         isPublished: isPublished || true,
         owner: user,
         views: 0,
+        storyboardStatus: storyboardEnabled ? "processing" : "none",
+        storyboardIntervalSec: 5,
+        storyboardThumbWidth: 160,
+        storyboardThumbHeight: 90,
     });
+
+    if (storyboardEnabled) {
+        try {
+            await enqueueStoryboardGeneration({
+                videoId: VideoData._id.toString(),
+                sourceVideoUrl: videoFileUrl,
+                intervalSec: 5,
+                durationSec: Duration || 0,
+            });
+        } catch (error) {
+            console.error(`[storyboard] enqueue failed for video=${VideoData._id}`, error);
+            await Video.findByIdAndUpdate(VideoData._id, {
+                $set: { storyboardStatus: "failed" },
+            });
+            VideoData.storyboardStatus = "failed";
+        }
+    }
 
     return res.status(201)
         .json(new ApiResponse(201, normalizeVideoMedia(VideoData), "Video Uploaded Successfully!"));
@@ -121,6 +160,12 @@ const getVideobyId = asyncHandler(async (req, res) => {
                 duration: 1,
                 views: 1,
                 isPublished: 1,
+                storyboardStatus: 1,
+                storyboardSpriteUrl: 1,
+                storyboardVttUrl: 1,
+                storyboardIntervalSec: 1,
+                storyboardThumbWidth: 1,
+                storyboardThumbHeight: 1,
                 createdAt: 1,
                 "ownerDetails._id": 1,
                 "ownerDetails.username": 1,
@@ -292,6 +337,12 @@ const getAllVideos = asyncHandler(async(req,res)=>{
                 duration: 1,
                 views: 1,
                 isPublished: 1,
+                storyboardStatus: 1,
+                storyboardSpriteUrl: 1,
+                storyboardVttUrl: 1,
+                storyboardIntervalSec: 1,
+                storyboardThumbWidth: 1,
+                storyboardThumbHeight: 1,
                 createdAt: 1,
                 "ownerDetails._id": 1,
                 "ownerDetails.username": 1,
@@ -357,6 +408,12 @@ const getUserVideos = asyncHandler(async(req,res)=>{
                 duration: 1,
                 views: 1,
                 isPublished: 1,
+                storyboardStatus: 1,
+                storyboardSpriteUrl: 1,
+                storyboardVttUrl: 1,
+                storyboardIntervalSec: 1,
+                storyboardThumbWidth: 1,
+                storyboardThumbHeight: 1,
                 createdAt: 1,
                 "ownerDetails._id": 1,
                 "ownerDetails.username": 1,
@@ -398,4 +455,73 @@ const incrementVideoViews = asyncHandler(async(req,res)=>{
     .json(new ApiResponse(200, normalizeVideoMedia(video), "View count incremented!"))
 })
 
-export {UploadVideo, getVideobyId, UpdateVideo, deleteVideo, togglePublishStatus, getAllVideos, getUserVideos, incrementVideoViews}
+const getVideoStoryboard = asyncHandler(async (req, res) => {
+    const VideoID = getValidatedVideoId(req.params.VideoID);
+    const video = await Video.findById(VideoID).select(
+        "storyboardStatus storyboardSpriteUrl storyboardVttUrl storyboardIntervalSec storyboardThumbWidth storyboardThumbHeight"
+    );
+
+    if (!video) throw new ApiError(404, "Video not found!");
+
+    const normalized = normalizeVideoMedia(video);
+    return res.status(200).json(
+        new ApiResponse(200, normalized.storyboard, "Storyboard status fetched successfully!")
+    );
+});
+
+const retryVideoStoryboard = asyncHandler(async (req, res) => {
+    const VideoID = getValidatedVideoId(req.params.VideoID);
+
+    if (!isStoryboardEnabled()) {
+        throw new ApiError(503, "Storyboard feature is disabled");
+    }
+
+    const video = await Video.findById(VideoID).select(
+        "owner videoFile duration storyboardIntervalSec storyboardThumbWidth storyboardThumbHeight"
+    );
+    if (!video) throw new ApiError(404, "Video not found!");
+
+    if (video.owner.toString() !== req.user._id.toString()) {
+        throw new ApiError(403, "You can only retry storyboard for your own videos!");
+    }
+
+    const intervalSec = Number(video.storyboardIntervalSec) || 5;
+    await Video.findByIdAndUpdate(VideoID, {
+        $set: {
+            storyboardStatus: "processing",
+            storyboardSpriteUrl: "",
+            storyboardVttUrl: "",
+            storyboardIntervalSec: intervalSec,
+            storyboardThumbWidth: Number(video.storyboardThumbWidth) || 160,
+            storyboardThumbHeight: Number(video.storyboardThumbHeight) || 90,
+        },
+    });
+
+    await enqueueStoryboardGeneration({
+        videoId: video._id.toString(),
+        sourceVideoUrl: mediaUrl(video.videoFile),
+        intervalSec,
+        durationSec: Number(video.duration) || 0,
+    });
+
+    return res.status(202).json(
+        new ApiResponse(
+            202,
+            { videoId: video._id, storyboardStatus: "processing", storyboardIntervalSec: intervalSec },
+            "Storyboard regeneration queued"
+        )
+    );
+});
+
+export {
+    UploadVideo,
+    getVideobyId,
+    UpdateVideo,
+    deleteVideo,
+    togglePublishStatus,
+    getAllVideos,
+    getUserVideos,
+    incrementVideoViews,
+    getVideoStoryboard,
+    retryVideoStoryboard,
+}
