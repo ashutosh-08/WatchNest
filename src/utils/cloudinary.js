@@ -1,6 +1,11 @@
 import {v2 as cloudinary} from "cloudinary";
 import fs from "fs";
 
+const toHttps = (url) => {
+    if (!url || typeof url !== "string") return url;
+    return url.replace(/^http:\/\//i, "https://");
+};
+
 // Configuration
 cloudinary.config({ 
     cloud_name: process.env.CLOUDINARY_CLOUD_NAME, 
@@ -16,14 +21,19 @@ const uploadOnCloudinary = async (localFilePath) => {
         const response = await cloudinary.uploader.upload(localFilePath, {
             resource_type: "auto"
         });
+        const secureUrl = toHttps(response?.secure_url || response?.url);
         
         // File has been uploaded successfully
-        console.log("File uploaded successfully on cloudinary!\n", response.url);
+        console.log("File uploaded successfully on cloudinary!\n", secureUrl);
         
         // Remove the locally saved temporary file from server
         fs.unlinkSync(localFilePath);
         
-        return response;
+        return {
+            ...response,
+            url: secureUrl,
+            secure_url: secureUrl,
+        };
     }   
     catch (error) {
         // Remove the locally saved temporary file on error

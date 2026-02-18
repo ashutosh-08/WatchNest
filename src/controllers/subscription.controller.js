@@ -5,6 +5,31 @@ import { asyncHandler } from "../utils/asyncHandler.js";
 import { ApiError } from "../utils/ApiError.js";
 import { ApiResponse } from "../utils/ApiResponse.js";
 
+const toHttps = (url) => {
+    if (!url || typeof url !== "string") return url;
+    return url.replace(/^http:\/\//i, "https://");
+};
+
+const normalizeSubscriberMedia = (subscriptionDoc) => {
+    if (!subscriptionDoc) return subscriptionDoc;
+    const item = typeof subscriptionDoc.toObject === "function"
+        ? subscriptionDoc.toObject()
+        : { ...subscriptionDoc };
+    if (item.subscriber && typeof item.subscriber === "object") {
+        item.subscriber = {
+            ...item.subscriber,
+            avatar: toHttps(item.subscriber.avatar),
+        };
+    }
+    if (item.channel && typeof item.channel === "object") {
+        item.channel = {
+            ...item.channel,
+            avatar: toHttps(item.channel.avatar),
+        };
+    }
+    return item;
+};
+
 const toggleSubscription = asyncHandler(async (req, res) => {
     const { channelId } = req.params;
     const subscriberId = req.user?._id;
@@ -101,7 +126,7 @@ const getUserChannelSubscribers = asyncHandler(async (req, res) => {
 
     return res
         .status(200)
-        .json(new ApiResponse(200, subscribers, "Channel subscribers fetched successfully!"));
+        .json(new ApiResponse(200, subscribers.map(normalizeSubscriberMedia), "Channel subscribers fetched successfully!"));
 });
 
 const getSubscribedChannels = asyncHandler(async (req, res) => {
@@ -150,7 +175,7 @@ const getSubscribedChannels = asyncHandler(async (req, res) => {
 
     return res
         .status(200)
-        .json(new ApiResponse(200, subscribedChannels, "Subscribed channels fetched successfully!"));
+        .json(new ApiResponse(200, subscribedChannels.map(normalizeSubscriberMedia), "Subscribed channels fetched successfully!"));
 });
 
 export { toggleSubscription, getUserChannelSubscribers, getSubscribedChannels };

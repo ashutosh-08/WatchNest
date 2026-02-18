@@ -6,6 +6,25 @@ import { ApiResponse } from "../utils/ApiResponse.js";
 import jwt from 'jsonwebtoken'
 import mongoose from "mongoose";
 
+const toHttps = (url) => {
+    if (!url || typeof url !== "string") return url;
+    return url.replace(/^http:\/\//i, "https://");
+};
+
+const mediaUrl = (assetOrUrl) => {
+    if (!assetOrUrl) return "";
+    if (typeof assetOrUrl === "string") return toHttps(assetOrUrl);
+    return toHttps(assetOrUrl?.secure_url || assetOrUrl?.url || "");
+};
+
+const normalizeUserMedia = (userDoc) => {
+    if (!userDoc) return userDoc;
+    const user = typeof userDoc.toObject === "function" ? userDoc.toObject() : { ...userDoc };
+    user.avatar = mediaUrl(user.avatar);
+    user.coverImage = mediaUrl(user.coverImage);
+    return user;
+};
+
 
 //acess and refresh token method
 //always try to make variable name more readable and useful
@@ -96,8 +115,8 @@ const registerUser= asyncHandler(async (req,res,)=>{
         //db is in other continent so we use the await for it 
     const user =await User.create({
         fullName: normalizedFullName,
-        avatar: avatar?.url || fallbackAvatar,
-        coverImage:coverImage?.url || "",// coverimage can be empty also
+        avatar: mediaUrl(avatar) || fallbackAvatar,
+        coverImage: mediaUrl(coverImage) || "",// coverimage can be empty also
         email: normalizedEmail,
         password: normalizedPassword,
         username: normalizedUsername,
@@ -116,7 +135,7 @@ const registerUser= asyncHandler(async (req,res,)=>{
     //8. RESPONSE
         //you can directly send createdUser data into json
     return await res.status(201).json(
-        new ApiResponse(200,createdUser,"User registered Successfully!")
+        new ApiResponse(200,normalizeUserMedia(createdUser),"User registered Successfully!")
     )
 })
 
@@ -177,7 +196,7 @@ const registerUser= asyncHandler(async (req,res,)=>{
             new ApiResponse(
                 200,
                 {
-                user:LoggedInUser,accessToken,
+                user:normalizeUserMedia(LoggedInUser),accessToken,
                 refreshToken
             },
             "User logged In Successfully"
@@ -293,7 +312,7 @@ const changeCurrentPassword = asyncHandler(async(req,res)=>{
 
 const getCurrentUser= asyncHandler(async(req,res)=>{
     return res.status(200)
-    .json(new ApiResponse(200,req.user,"User fetched Successfully!"))
+    .json(new ApiResponse(200,normalizeUserMedia(req.user),"User fetched Successfully!"))
 })
 
 //Update Account Details (tested!)
@@ -317,7 +336,7 @@ const UpdateAccountDetails= asyncHandler(async(req,res)=>{
     
     //send a response to user 
     res.status(200)
-    .json(new ApiResponse(200,user,"Account Details Changed Successfully!"))    
+    .json(new ApiResponse(200,normalizeUserMedia(user),"Account Details Changed Successfully!"))    
 })
 //Advice if you have to update file in db like coverImage, Avatar then keep it in a different controller,endpoints
 // it is a standard, if user only wants to update its image give save option and hit endpoint there,so we dont have to
@@ -333,16 +352,16 @@ const UpdateUserAvatar= asyncHandler(async(req,res)=>{
     // upload on clodinary
     const avatar= await uploadOnCloudinary(AvatarLocalPath)
     //check if uploaded successfully or not
-    if(!avatar.url) throw new ApiError(400,"Error in Uploading on avatar!")
+    if(!mediaUrl(avatar)) throw new ApiError(400,"Error in Uploading on avatar!")
     // upload in db
     const user= await User.findByIdAndUpdate(req.user?._id,{
         $set:{
-            avatar: avatar.url
+            avatar: mediaUrl(avatar)
         }
     },{new:true}).select("-password")
     // send resopnse to user
     res.status(200)
-    .json(new ApiResponse(200,user,"Avatar Changed Successfully!"))
+    .json(new ApiResponse(200,normalizeUserMedia(user),"Avatar Changed Successfully!"))
 })
 
 // we use $set method to send update those data which we want not all the data
@@ -357,16 +376,16 @@ const UpdateUserAvatar= asyncHandler(async(req,res)=>{
         // upload on clodinary
         const coverImg= await uploadOnCloudinary(CoverLocalPath)
         //check if uploaded successfully or not
-        if(!coverImg.url) throw new ApiError(400,"Error in Uploading on Cover img!")
+        if(!mediaUrl(coverImg)) throw new ApiError(400,"Error in Uploading on Cover img!")
         // upload in db
         const user= await User.findByIdAndUpdate(req.user?._id,{
             $set:{
-                coverImage: coverImg.url
+                coverImage: mediaUrl(coverImg)
             }
         },{new:true}).select("-password")
         // send resopnse to user
         res.status(200)
-        .json(new ApiResponse(200,user,"Cover img Changed Successfully!"))
+        .json(new ApiResponse(200,normalizeUserMedia(user),"Cover img Changed Successfully!"))
 
 })
 //(tested!)
@@ -454,7 +473,7 @@ const getUserChannelProfile = asyncHandler(async(req,res)=>{
     if(!channel.length) throw new ApiError(400,"Channel does not exist!")
      //send response to user
     res.status(200)
-    .json(new ApiResponse(200,channel[0],"User channel fetched successfully!"))
+    .json(new ApiResponse(200,normalizeUserMedia(channel[0]),"User channel fetched successfully!"))
         
 })
 

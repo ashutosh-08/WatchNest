@@ -6,6 +6,29 @@ import { User } from "../models/user.model.js";
 import { Video } from "../models/video.model.js";
 import { Comment } from "../models/comment.model.js";
 
+const toHttps = (url) => {
+    if (!url || typeof url !== "string") return url;
+    return url.replace(/^http:\/\//i, "https://");
+};
+
+const normalizeCommentMedia = (commentDoc) => {
+    if (!commentDoc) return commentDoc;
+    const comment = typeof commentDoc.toObject === "function" ? commentDoc.toObject() : { ...commentDoc };
+    if (comment.ownerDetails) {
+        comment.ownerDetails = {
+            ...comment.ownerDetails,
+            avatar: toHttps(comment.ownerDetails.avatar),
+        };
+    }
+    if (comment.owner && typeof comment.owner === "object") {
+        comment.owner = {
+            ...comment.owner,
+            avatar: toHttps(comment.owner.avatar),
+        };
+    }
+    return comment;
+};
+
 //Controller to get all comments on a video
 
 const getVideoComment = asyncHandler(async (req, res) => {
@@ -74,7 +97,7 @@ const getVideoComment = asyncHandler(async (req, res) => {
     ]);
 
     return res.status(200)
-        .json(new ApiResponse(200, comments, "Comments fetched successfully!"));
+        .json(new ApiResponse(200, comments.map(normalizeCommentMedia), "Comments fetched successfully!"));
 });
 //Add a Comment on a Video
 
@@ -115,7 +138,7 @@ const AddComment = asyncHandler(async (req, res) => {
     await comment.populate("owner", "username avatar fullName");
 
     return res.status(201)
-        .json(new ApiResponse(201, comment, "Comment added successfully!"));
+        .json(new ApiResponse(201, normalizeCommentMedia(comment), "Comment added successfully!"));
 });
 
 //Update a Comment
@@ -159,7 +182,7 @@ const UpdateComment = asyncHandler(async (req, res) => {
     ).populate("owner", "username avatar fullName");
 
     return res.status(200)
-        .json(new ApiResponse(200, updatedComment, "Comment updated successfully!"));
+        .json(new ApiResponse(200, normalizeCommentMedia(updatedComment), "Comment updated successfully!"));
 });
 
 //Delete a Comment

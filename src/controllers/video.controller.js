@@ -5,6 +5,37 @@ import { ApiResponse } from "../utils/ApiResponse.js";
 import { uploadOnCloudinary } from "../utils/cloudinary.js";
 import mongoose from "mongoose";
 
+const toHttps = (url) => {
+    if (!url || typeof url !== "string") return url;
+    return url.replace(/^http:\/\//i, "https://");
+};
+
+const mediaUrl = (assetOrUrl) => {
+    if (!assetOrUrl) return "";
+    if (typeof assetOrUrl === "string") return toHttps(assetOrUrl);
+    return toHttps(assetOrUrl?.secure_url || assetOrUrl?.url || "");
+};
+
+const normalizeVideoMedia = (videoDoc) => {
+    if (!videoDoc) return videoDoc;
+    const video = typeof videoDoc.toObject === "function" ? videoDoc.toObject() : { ...videoDoc };
+    video.videoFile = mediaUrl(video.videoFile);
+    video.thumbnail = mediaUrl(video.thumbnail);
+    if (video.ownerDetails) {
+        video.ownerDetails = {
+            ...video.ownerDetails,
+            avatar: mediaUrl(video.ownerDetails.avatar),
+        };
+    }
+    if (video.owner && typeof video.owner === "object") {
+        video.owner = {
+            ...video.owner,
+            avatar: mediaUrl(video.owner.avatar),
+        };
+    }
+    return video;
+};
+
 // Upload Video on App
 const UploadVideo = asyncHandler(async (req, res) => {
     // Get data from body
@@ -23,9 +54,11 @@ const UploadVideo = asyncHandler(async (req, res) => {
     // Upload to cloudinary
     const VideoFile = await uploadOnCloudinary(VideoLocalPath);
     const thumbnailFile = await uploadOnCloudinary(thumbnailLocalPath);
+    const videoFileUrl = mediaUrl(VideoFile);
+    const thumbnailUrl = mediaUrl(thumbnailFile);
 
     // Validation check for successful upload
-    if (!VideoFile) throw new ApiError(400, "Failed to upload video!");
+    if (!videoFileUrl) throw new ApiError(400, "Failed to upload video!");
 
     // Get duration from cloudinary response
     const Duration = VideoFile?.duration;
@@ -37,8 +70,8 @@ const UploadVideo = asyncHandler(async (req, res) => {
     const VideoData = await Video.create({
         title,
         description,
-        videoFile: VideoFile?.url,
-        thumbnail: thumbnailFile?.url || "",
+        videoFile: videoFileUrl,
+        thumbnail: thumbnailUrl || "",
         duration: Duration || 0,
         isPublished: isPublished || true,
         owner: user,
@@ -46,7 +79,7 @@ const UploadVideo = asyncHandler(async (req, res) => {
     });
 
     return res.status(201)
-        .json(new ApiResponse(201, VideoData, "Video Uploaded Successfully!"));
+        .json(new ApiResponse(201, normalizeVideoMedia(VideoData), "Video Uploaded Successfully!"));
 })
 
 
@@ -100,7 +133,7 @@ const getVideobyId = asyncHandler(async (req, res) => {
     if (!video || video.length === 0) throw new ApiError(404, "Video not found!");
      
     return res.status(200)
-        .json(new ApiResponse(200, video[0], "Video Fetched Successfully!"));
+        .json(new ApiResponse(200, normalizeVideoMedia(video[0]), "Video Fetched Successfully!"));
 });
 
 
@@ -134,10 +167,11 @@ const UpdateVideo = asyncHandler(async (req, res) => {
     if (req.file?.path) {
         const thumbnailLocalPath = req.file.path;
         const cloudinaryLink = await uploadOnCloudinary(thumbnailLocalPath);
+        const secureThumbnail = mediaUrl(cloudinaryLink);
 
-        if (!cloudinaryLink?.url) throw new ApiError(400, "Failed to upload thumbnail!");
+        if (!secureThumbnail) throw new ApiError(400, "Failed to upload thumbnail!");
         
-        updatedFields.thumbnail = cloudinaryLink.url;
+        updatedFields.thumbnail = secureThumbnail;
     }
 
     const updatedVideo = await Video.findByIdAndUpdate(VideoID, {
@@ -145,7 +179,7 @@ const UpdateVideo = asyncHandler(async (req, res) => {
     }, { new: true });
     
     return res.status(200)
-        .json(new ApiResponse(200, updatedVideo, "Video Updated Successfully!"));
+        .json(new ApiResponse(200, normalizeVideoMedia(updatedVideo), "Video Updated Successfully!"));
 });
 
 
@@ -271,7 +305,7 @@ const getAllVideos = asyncHandler(async(req,res)=>{
 
     return res.status(200)
     .json(new ApiResponse(200, {
-        videos,
+        videos: videos.map(normalizeVideoMedia),
         totalVideos,
         page: parseInt(page),
         totalPages: Math.ceil(totalVideos / parseInt(limit))
@@ -335,7 +369,7 @@ const getUserVideos = asyncHandler(async(req,res)=>{
 
     return res.status(200)
     .json(new ApiResponse(200, {
-        videos,
+        videos: videos.map(normalizeVideoMedia),
         totalVideos,
         page: parseInt(page),
         totalPages: Math.ceil(totalVideos / parseInt(limit))
@@ -361,7 +395,7 @@ const incrementVideoViews = asyncHandler(async(req,res)=>{
     if(!video) throw new ApiError(404, "Video not found!");
 
     return res.status(200)
-    .json(new ApiResponse(200, video, "View count incremented!"))
+    .json(new ApiResponse(200, normalizeVideoMedia(video), "View count incremented!"))
 })
 
 export {UploadVideo, getVideobyId, UpdateVideo, deleteVideo, togglePublishStatus, getAllVideos, getUserVideos, incrementVideoViews}
