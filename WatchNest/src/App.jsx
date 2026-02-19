@@ -1,5 +1,5 @@
 import React from 'react'
-import { Routes, Route, Navigate } from 'react-router-dom'
+import { Routes, Route, Navigate, useParams } from 'react-router-dom'
 import { AuthProvider } from './context/AuthContext'
 import Navbar from './components/Navbar'
 import ProtectedRoute from './components/ProtectedRoute'
@@ -13,6 +13,11 @@ import Upload from './pages/Upload'
 import Search from './pages/Search'
 import Profile from './pages/Profile'
 
+function WatchRouteWrapper() {
+  const { id } = useParams()
+  return <Watch key={id} />
+}
+
 export default function App(){
   return (
     <AuthProvider>
@@ -22,7 +27,7 @@ export default function App(){
           <Routes>
             {/* Public Routes */}
             <Route path="/" element={<Home/>} />
-            <Route path="/watch/:id" element={<Watch/>} />
+            <Route path="/watch/:id" element={<WatchRouteWrapper/>} />
             <Route path="/search" element={<Search/>} />
             <Route path="/login" element={<Login/>} />
             <Route path="/register" element={<Register/>} />

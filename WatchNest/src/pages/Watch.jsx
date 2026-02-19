@@ -1,62 +1,440 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
+import { createPortal } from 'react-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import { videoService, commentService, subscriptionService } from '../services/api.service'
 import { useAuth } from '../context/AuthContext'
+import Plyr from 'plyr'
 
 const COMMENT_EMOJIS = ['😀', '😂', '😍', '🔥', '👏', '👍', '❤️', '🎉', '😎', '🤩', '🙌', '💯']
+const USE_PROGRESS_ANCHORED_PREVIEW = true
 
-const formatClock = (seconds = 0) => {
-  const safe = Math.max(0, Math.floor(seconds))
-  const mins = Math.floor(safe / 60)
-  const secs = String(safe % 60).padStart(2, '0')
-  return `${mins}:${secs}`
+const isStoryboardDebugEnabled = () => {
+  if (!import.meta.env.DEV || typeof window === 'undefined') return false
+  try {
+    return window.localStorage.getItem('wn_storyboard_debug') === '1'
+  } catch {
+    return false
+  }
 }
 
-const parseStoryboardVtt = (vttText = '') => {
-  const blocks = vttText
+const logStoryboardDebug = (...args) => {
+  if (!isStoryboardDebugEnabled()) return
+  console.log('[storyboard-preview]', ...args)
+}
+
+const parseVttTimeToSeconds = (raw = '') => {
+  const parts = String(raw).trim().split(':')
+  if (parts.length < 3) return NaN
+  const hh = Number(parts[0] || 0)
+  const mm = Number(parts[1] || 0)
+  const ss = Number(parts[2] || 0)
+  if (![hh, mm, ss].every(Number.isFinite)) return NaN
+  return hh * 3600 + mm * 60 + ss
+}
+
+const parseVttToCues = (text = '', vttUrl = '') => {
+  const blocks = String(text)
     .split(/\r?\n\r?\n/)
     .map((block) => block.trim())
     .filter(Boolean)
-    .filter((block) => !block.startsWith('WEBVTT'))
 
-  const toSeconds = (timeText) => {
-    const [h = '0', m = '0', s = '0'] = timeText.trim().split(':')
-    return Number(h) * 3600 + Number(m) * 60 + Number(s)
-  }
-
-  const cues = []
+  const parsed = []
   for (const block of blocks) {
-    const lines = block.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
-    if (lines.length < 2) continue
-    const timingLine = lines[0].includes('-->') ? lines[0] : lines[1]
-    const assetLine = lines[0].includes('-->') ? lines[1] : lines[2]
-    if (!timingLine || !assetLine || !timingLine.includes('-->')) continue
+    const lines = block
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+    const timing = lines.find((line) => line.includes('-->'))
+    if (!timing) continue
+    const [startRaw, endRaw] = timing.split('-->').map((s) => s.trim())
+    const start = parseVttTimeToSeconds(startRaw)
+    const end = parseVttTimeToSeconds(endRaw)
+    if (!Number.isFinite(start) || !Number.isFinite(end)) continue
 
-    const [startText, endText] = timingLine.split('-->').map((part) => part.trim())
-    const [urlPart, xywhPart] = assetLine.split('#xywh=')
-    if (!urlPart || !xywhPart) continue
-    const [x, y, w, h] = xywhPart.split(',').map((value) => Number(value))
-    if ([x, y, w, h].some((value) => Number.isNaN(value))) continue
-
-    cues.push({
-      start: toSeconds(startText),
-      end: toSeconds(endText),
-      url: urlPart.trim(),
-      x,
-      y,
-      w,
-      h,
+    const imageLine = lines.find((line) => !line.includes('-->') && !/^WEBVTT/i.test(line))
+    if (!imageLine) continue
+    const [rawUrl, rawCoords] = imageLine.split('#xywh=')
+    let url = rawUrl || ''
+    try {
+      url = new URL(rawUrl, vttUrl).toString()
+    } catch {
+      url = rawUrl
+    }
+    const [x = '0', y = '0', w = '160', h = '90'] = String(rawCoords || '')
+      .split(',')
+      .map((item) => item.trim())
+    parsed.push({
+      start,
+      end,
+      url,
+      x: Number(x) || 0,
+      y: Number(y) || 0,
+      w: Number(w) || 160,
+      h: Number(h) || 90,
     })
   }
-
-  return cues
+  return parsed
 }
+
+const sanitizeCues = (input = []) =>
+  Array.isArray(input)
+    ? input
+        .map((cue) => ({
+          start: Number(cue?.start) || 0,
+          end: Number(cue?.end) || 0,
+          url: cue?.url || '',
+          x: Number(cue?.x) || 0,
+          y: Number(cue?.y) || 0,
+          w: Number(cue?.w) || 160,
+          h: Number(cue?.h) || 90,
+        }))
+        .filter((cue) => cue.url && cue.end >= cue.start)
+        .sort((a, b) => a.start - b.start)
+    : []
+
+const StoryboardVideoPlayer = React.memo(function StoryboardVideoPlayer({
+  mediaKey,
+  src,
+  vttUrl,
+  poster,
+  cues = [],
+  durationSec = 0,
+  onFirstPlay
+}) {
+  const playerShellRef = useRef(null)
+  const videoRef = useRef(null)
+  const playerRef = useRef(null)
+  const hasPlayedRef = useRef(false)
+  const onFirstPlayRef = useRef(onFirstPlay)
+  const [resolvedCues, setResolvedCues] = useState([])
+  const [hoverPreview, setHoverPreview] = useState({ visible: false, left: 0, top: null, cue: null, time: 0 })
+  const [overlayHost, setOverlayHost] = useState(null)
+
+  useEffect(() => {
+    hasPlayedRef.current = false
+  }, [src, mediaKey])
+
+  useEffect(() => {
+    onFirstPlayRef.current = onFirstPlay
+  }, [onFirstPlay])
+
+  useEffect(() => {
+    let active = true
+    const directCues = sanitizeCues(cues)
+    const normalizedVttUrl = typeof vttUrl === 'string' ? vttUrl.trim() : ''
+
+    if (directCues.length > 0) {
+      setResolvedCues(directCues)
+      return () => {
+        active = false
+      }
+    }
+
+    if (!normalizedVttUrl) {
+      setResolvedCues([])
+      return () => {
+        active = false
+      }
+    }
+
+    fetch(normalizedVttUrl)
+      .then((res) => (res.ok ? res.text() : ''))
+      .then((text) => {
+        if (!active) return
+        const parsed = parseVttToCues(text, normalizedVttUrl).sort((a, b) => a.start - b.start)
+        setResolvedCues(parsed)
+      })
+      .catch((error) => {
+        if (!active) return
+        console.error('Failed parsing storyboard VTT on client:', error)
+        setResolvedCues([])
+      })
+
+    return () => {
+      active = false
+    }
+  }, [cues, vttUrl, mediaKey])
+
+  const formatHoverTime = useCallback((secondsInput) => {
+    const safe = Math.max(0, Math.floor(Number(secondsInput) || 0))
+    const h = Math.floor(safe / 3600)
+    const m = Math.floor((safe % 3600) / 60)
+    const s = safe % 60
+    if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+    return `${m}:${String(s).padStart(2, '0')}`
+  }, [])
+
+  useEffect(() => {
+    const videoEl = videoRef.current
+    if (!videoEl || !src) return
+
+    if (playerRef.current) {
+      playerRef.current.destroy()
+      playerRef.current = null
+    }
+
+    let player = null
+
+    try {
+      player = new Plyr(videoEl, {
+        controls: ['play-large', 'play', 'progress', 'current-time', 'mute', 'volume', 'settings', 'fullscreen'],
+        tooltips: { controls: true, seek: true },
+      })
+    } catch (error) {
+      console.error('Plyr init failed:', error)
+      return
+    }
+
+    const handlePlay = () => {
+      if (hasPlayedRef.current) return
+      hasPlayedRef.current = true
+      onFirstPlayRef.current?.()
+    }
+
+    player.on('play', handlePlay)
+    const updateOverlayHost = () => {
+      setOverlayHost(player?.elements?.container || playerShellRef.current || null)
+    }
+    const updateOverlayHostOnFsChange = () => {
+      updateOverlayHost()
+      if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+        window.requestAnimationFrame(updateOverlayHost)
+      }
+    }
+    const handleDocumentFullscreenChange = () => {
+      updateOverlayHostOnFsChange()
+    }
+
+    player.on('ready', updateOverlayHost)
+    player.on('enterfullscreen', updateOverlayHostOnFsChange)
+    player.on('exitfullscreen', updateOverlayHostOnFsChange)
+    document.addEventListener('fullscreenchange', handleDocumentFullscreenChange)
+    document.addEventListener('webkitfullscreenchange', handleDocumentFullscreenChange)
+    playerRef.current = player
+    updateOverlayHost()
+
+    return () => {
+      if (player) {
+        player.off('play', handlePlay)
+        player.off('ready', updateOverlayHost)
+        player.off('enterfullscreen', updateOverlayHostOnFsChange)
+        player.off('exitfullscreen', updateOverlayHostOnFsChange)
+        player.destroy()
+      }
+      document.removeEventListener('fullscreenchange', handleDocumentFullscreenChange)
+      document.removeEventListener('webkitfullscreenchange', handleDocumentFullscreenChange)
+      if (playerRef.current === player || !player) {
+        playerRef.current = null
+      }
+      setOverlayHost(null)
+    }
+  }, [src, vttUrl, mediaKey])
+
+  const applyPreviewAtRatio = useCallback((ratio, layout = {}) => {
+    if (resolvedCues.length === 0) return
+
+    const safeRatio = Math.min(1, Math.max(0, ratio))
+    const cueIndex = Math.min(
+      resolvedCues.length - 1,
+      Math.max(0, Math.floor(safeRatio * (resolvedCues.length - 1)))
+    )
+    const cue = resolvedCues[cueIndex]
+    if (!cue) return
+
+    const videoEl = videoRef.current
+    const duration =
+      Number(playerRef.current?.duration) ||
+      Number(videoEl?.duration) ||
+      Number(durationSec) ||
+      Number(resolvedCues[resolvedCues.length - 1]?.end || 0)
+    const hoverTime = duration > 0 ? safeRatio * duration : Number(cue.start || 0)
+    const cueWidth = Number(cue?.w) || 160
+    const cueHeight = Number(cue?.h) || 90
+    const rawLeft = Number(layout?.leftPx)
+    const rawHostWidth = Number(layout?.hostWidthPx)
+    const rawProgressTop = Number(layout?.progressTopPx)
+
+    let safeLeft = Number.isFinite(rawLeft) ? rawLeft : 0
+    if (USE_PROGRESS_ANCHORED_PREVIEW && Number.isFinite(rawHostWidth) && rawHostWidth > 0) {
+      const minLeft = cueWidth / 2 + 8
+      const maxLeft = Math.max(minLeft, rawHostWidth - cueWidth / 2 - 8)
+      safeLeft = Math.min(Math.max(safeLeft, minLeft), maxLeft)
+    }
+
+    const safeTop =
+      USE_PROGRESS_ANCHORED_PREVIEW && Number.isFinite(rawProgressTop)
+        ? Math.max(8, rawProgressTop - cueHeight - 14)
+        : null
+
+    setHoverPreview({
+      visible: true,
+      left: safeLeft,
+      top: safeTop,
+      cue,
+      time: hoverTime,
+    })
+  }, [resolvedCues, durationSec])
+
+  useEffect(() => {
+    const hostEl = overlayHost || playerShellRef.current
+    if (!hostEl || resolvedCues.length === 0) return
+    const progressEl = playerRef.current?.elements?.container?.querySelector('.plyr__progress')
+
+    const hidePreview = () => {
+      setHoverPreview((prev) => (prev.visible ? { ...prev, visible: false } : prev))
+    }
+
+    if (USE_PROGRESS_ANCHORED_PREVIEW && progressEl) {
+      logStoryboardDebug('bind strategy=progress', {
+        mediaKey,
+        fullscreenActive: Boolean(playerRef.current?.fullscreen?.active),
+      })
+
+      const handleProgressMove = (event) => {
+        const hostRect = hostEl.getBoundingClientRect()
+        const progressRect = progressEl.getBoundingClientRect()
+        if (hostRect.width <= 0 || hostRect.height <= 0 || progressRect.width <= 0) {
+          hidePreview()
+          return
+        }
+
+        const localProgressX = Math.min(Math.max(event.clientX - progressRect.left, 0), progressRect.width)
+        const ratio = localProgressX / Math.max(1, progressRect.width)
+        const previewLeft = (progressRect.left - hostRect.left) + localProgressX
+        const progressTop = progressRect.top - hostRect.top
+
+        applyPreviewAtRatio(ratio, {
+          leftPx: previewLeft,
+          progressTopPx: progressTop,
+          hostWidthPx: hostRect.width,
+        })
+      }
+
+      progressEl.addEventListener('mousemove', handleProgressMove)
+      progressEl.addEventListener('mouseenter', handleProgressMove)
+      progressEl.addEventListener('mouseleave', hidePreview)
+      hostEl.addEventListener('mouseleave', hidePreview)
+
+      return () => {
+        progressEl.removeEventListener('mousemove', handleProgressMove)
+        progressEl.removeEventListener('mouseenter', handleProgressMove)
+        progressEl.removeEventListener('mouseleave', hidePreview)
+        hostEl.removeEventListener('mouseleave', hidePreview)
+      }
+    }
+
+    logStoryboardDebug('bind strategy=host-fallback', {
+      mediaKey,
+      hasProgressElement: Boolean(progressEl),
+    })
+
+    const handleHostMove = (event) => {
+      const hostRect = hostEl.getBoundingClientRect()
+      if (hostRect.width <= 0 || hostRect.height <= 0) return
+
+      const progressRect = progressEl?.getBoundingClientRect?.()
+      let ratio = 0
+      let previewLeft = 0
+      if (progressRect && progressRect.width > 0) {
+        const minY = progressRect.top - 24
+        const maxY = progressRect.bottom + 24
+        if (event.clientY < minY || event.clientY > maxY) {
+          hidePreview()
+          return
+        }
+        const localProgressX = Math.min(Math.max(event.clientX - progressRect.left, 0), progressRect.width)
+        ratio = localProgressX / Math.max(1, progressRect.width)
+        previewLeft = (progressRect.left - hostRect.left) + localProgressX
+      } else {
+        const localX = Math.min(Math.max(event.clientX - hostRect.left, 0), hostRect.width)
+        const localY = Math.min(Math.max(event.clientY - hostRect.top, 0), hostRect.height)
+        if (localY < hostRect.height - 120) {
+          hidePreview()
+          return
+        }
+        ratio = localX / Math.max(1, hostRect.width)
+        previewLeft = localX
+      }
+
+      applyPreviewAtRatio(ratio, {
+        leftPx: previewLeft,
+        hostWidthPx: hostRect.width,
+      })
+    }
+
+    hostEl.addEventListener('mousemove', handleHostMove)
+    hostEl.addEventListener('mouseenter', handleHostMove)
+    hostEl.addEventListener('mouseleave', hidePreview)
+    document.addEventListener('mousemove', handleHostMove)
+    document.addEventListener('mouseleave', hidePreview)
+
+    return () => {
+      hostEl.removeEventListener('mousemove', handleHostMove)
+      hostEl.removeEventListener('mouseenter', handleHostMove)
+      hostEl.removeEventListener('mouseleave', hidePreview)
+      document.removeEventListener('mousemove', handleHostMove)
+      document.removeEventListener('mouseleave', hidePreview)
+    }
+  }, [mediaKey, resolvedCues, applyPreviewAtRatio, overlayHost])
+
+  return (
+    <div
+      key={mediaKey}
+      ref={playerShellRef}
+      className="relative w-full bg-black overflow-visible"
+    >
+      <video
+        ref={videoRef}
+        className="plyr-react w-full h-[480px] bg-black"
+        crossOrigin="anonymous"
+        playsInline
+        controls
+        poster={poster || undefined}
+      >
+        <source src={src || ''} type="video/mp4" />
+        {vttUrl ? <track kind="metadata" src={vttUrl} default /> : null}
+      </video>
+      {(resolvedCues.length > 0 && (overlayHost || playerShellRef.current))
+        ? createPortal(
+            <div
+              data-storyboard-fallback="1"
+              className="absolute pointer-events-none z-[999]"
+              style={{
+                left: `${hoverPreview.left}px`,
+                ...(USE_PROGRESS_ANCHORED_PREVIEW && Number.isFinite(hoverPreview.top)
+                  ? { top: `${hoverPreview.top}px` }
+                  : { bottom: '64px' }),
+                transform: 'translateX(-50%)',
+                opacity: hoverPreview.visible ? 1 : 0,
+              }}
+            >
+              <div
+                className="border border-white/35 rounded-md shadow-[0_12px_26px_rgba(0,0,0,0.5)] bg-black"
+                style={{
+                  width: `${hoverPreview.cue?.w || 160}px`,
+                  height: `${hoverPreview.cue?.h || 90}px`,
+                  backgroundImage: hoverPreview.cue?.url ? `url(${hoverPreview.cue.url})` : 'none',
+                  backgroundRepeat: 'no-repeat',
+                  backgroundPosition: `-${hoverPreview.cue?.x || 0}px -${hoverPreview.cue?.y || 0}px`,
+                }}
+              />
+              <div className="mt-1 text-center text-[11px] font-semibold text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">
+                {formatHoverTime(hoverPreview.time)}
+              </div>
+            </div>,
+            overlayHost || playerShellRef.current
+          )
+        : null}
+    </div>
+  )
+})
 
 export default function Watch(){
   const {id} = useParams()
   const { user, isAuthenticated } = useAuth()
   const [video,setVideo] = useState(null)
+  const [storyboard, setStoryboard] = useState(null)
   const [comments, setComments] = useState([])
   const [loading,setLoading]=useState(true)
   const [commentText, setCommentText] = useState('')
@@ -71,17 +449,8 @@ export default function Watch(){
   const [showBountyToast, setShowBountyToast] = useState(false)
   const [bountyPulse, setBountyPulse] = useState(false)
   const [bountyProgress, setBountyProgress] = useState(0)
-  const [storyboardCues, setStoryboardCues] = useState([])
-  const [storyboardReady, setStoryboardReady] = useState(false)
-  const [durationSec, setDurationSec] = useState(0)
-  const [currentTimeSec, setCurrentTimeSec] = useState(0)
-  const [hoverTimeSec, setHoverTimeSec] = useState(0)
-  const [hoverPercent, setHoverPercent] = useState(0)
-  const [showHoverPreview, setShowHoverPreview] = useState(false)
   const subscribeButtonRef = useRef(null)
   const bountyBarRef = useRef(null)
-  const videoRef = useRef(null)
-  const seekBarRef = useRef(null)
 
   const getAvatarSrc = (avatar, name = 'User') => {
     if (avatar) return avatar
@@ -105,6 +474,15 @@ export default function Watch(){
     return entity.ownerDetails || {}
   }
 
+  const resolveMediaUrl = (value) => {
+    if (!value) return ''
+    if (typeof value === 'string') return value
+    if (typeof value === 'object') {
+      return value.secure_url || value.url || value.location || ''
+    }
+    return ''
+  }
+
   const formatCompactViews = (views = 0) => {
     if (views >= 1000000) return `${(views / 1000000).toFixed(1)}M views`
     if (views >= 1000) return `${(views / 1000).toFixed(1)}K views`
@@ -112,25 +490,80 @@ export default function Watch(){
   }
 
   useEffect(()=>{
+    let isActive = true
+
     const fetchData = async ()=>{
+      setLoading(true)
+      setVideo(null)
+      setStoryboard(null)
+      setComments([])
       try{
         const videoRes = await videoService.getVideoById(id)
-        setVideo(videoRes.data.data)
-        
-        const commentsRes = await commentService.getVideoComments(id)
-        setComments(commentsRes.data.data || [])
+        if (!isActive) return
+        const videoData = videoRes?.data?.data || null
+        const normalizedVideo = videoData
+          ? {
+              ...videoData,
+              videoFile: resolveMediaUrl(
+                videoData.videoFile || videoData.videoUrl || videoData.video_file
+              ),
+            }
+          : null
+        setVideo(normalizedVideo)
+        setLoading(false)
+
+        // Load non-critical data in parallel so video starts immediately.
+        videoService
+          .getVideoStoryboard(id)
+          .then((storyboardRes) => {
+            if (!isActive) return
+            const sb = storyboardRes?.data?.data || null
+            if (sb) {
+              setStoryboard({
+                ...sb,
+                vttUrl: resolveMediaUrl(sb.vttUrl || sb.storyboardVttUrl),
+                spriteUrl: resolveMediaUrl(sb.spriteUrl || sb.storyboardSpriteUrl),
+              })
+            } else {
+              setStoryboard(null)
+            }
+          })
+          .catch((storyboardError) => {
+            if (!isActive) return
+            console.error('Failed to fetch storyboard:', storyboardError)
+            setStoryboard(null)
+          })
+
+        commentService
+          .getVideoComments(id)
+          .then((commentsRes) => {
+            if (!isActive) return
+            setComments(commentsRes?.data?.data || [])
+          })
+          .catch((commentsError) => {
+            if (!isActive) return
+            console.error('Failed to fetch comments:', commentsError)
+            setComments([])
+          })
       }catch(err){
+        if (!isActive) return
         console.error('Failed to fetch:', err)
-      }finally{setLoading(false)}
+        setLoading(false)
+      }
     }
     fetchData()
+    return () => {
+      isActive = false
+    }
   },[id])
 
   useEffect(() => {
+    let isActive = true
     const fetchRecommendedVideos = async () => {
       setLoadingRecommended(true)
       try {
         const res = await videoService.getAllVideos(1, 20)
+        if (!isActive) return
         const payload = res?.data?.data
         const list = Array.isArray(payload) ? payload : payload?.videos
         const safeList = Array.isArray(list) ? list : []
@@ -139,87 +572,25 @@ export default function Watch(){
           .slice(0, 8)
         setRecommendedVideos(filtered)
       } catch (err) {
+        if (!isActive) return
         console.error('Failed to fetch recommended videos:', err)
         setRecommendedVideos([])
       } finally {
-        setLoadingRecommended(false)
+        if (isActive) setLoadingRecommended(false)
       }
     }
 
     fetchRecommendedVideos()
+    return () => {
+      isActive = false
+    }
   }, [id])
 
-  useEffect(() => {
-    setStoryboardCues([])
-    setStoryboardReady(false)
-    const storyboard = video?.storyboard
-    if (!storyboard || storyboard.status !== 'ready' || !storyboard.vttUrl) return
-
-    const loadStoryboard = async () => {
-      try {
-        const res = await fetch(storyboard.vttUrl)
-        const text = await res.text()
-        const cues = parseStoryboardVtt(text)
-        setStoryboardCues(cues)
-        setStoryboardReady(cues.length > 0)
-      } catch (error) {
-        console.error('Failed to load storyboard VTT:', error)
-        setStoryboardCues([])
-        setStoryboardReady(false)
-      }
-    }
-
-    loadStoryboard()
-  }, [video?.storyboard?.status, video?.storyboard?.vttUrl, id])
-
-  const getCueAtTime = (timeSec) =>
-    storyboardCues.find((cue) => timeSec >= cue.start && timeSec < cue.end) ||
-    storyboardCues[storyboardCues.length - 1]
-
-  const currentProgressPercent =
-    durationSec > 0 ? Math.min(100, Math.max(0, (currentTimeSec / durationSec) * 100)) : 0
-
-  const handleTimeUpdate = () => {
-    const videoEl = videoRef.current
-    if (!videoEl) return
-    setCurrentTimeSec(videoEl.currentTime || 0)
-  }
-
-  const handleLoadedMetadata = () => {
-    const videoEl = videoRef.current
-    if (!videoEl) return
-    setDurationSec(videoEl.duration || Number(video?.duration) || 0)
-  }
-
-  const updateHoverFromClientX = (clientX) => {
-    const barEl = seekBarRef.current
-    if (!barEl) return 0
-    const rect = barEl.getBoundingClientRect()
-    if (rect.width <= 0) return 0
-    const offsetX = Math.min(Math.max(clientX - rect.left, 0), rect.width)
-    const percent = offsetX / rect.width
-    const targetTime = percent * (durationSec || 0)
-    setHoverPercent(percent * 100)
-    setHoverTimeSec(targetTime)
-    return targetTime
-  }
-
-  const handleSeekMouseMove = (event) => {
-    updateHoverFromClientX(event.clientX)
-    setShowHoverPreview(true)
-  }
-
-  const handleSeekMouseLeave = () => {
-    setShowHoverPreview(false)
-  }
-
-  const handleSeekClick = (event) => {
-    const videoEl = videoRef.current
-    if (!videoEl) return
-    const targetTime = updateHoverFromClientX(event.clientX)
-    videoEl.currentTime = targetTime
-    setCurrentTimeSec(targetTime)
-  }
+  const handleFirstPlay = useCallback(() => {
+    videoService.incrementViews(id).catch((error) => {
+      console.error('Failed to increment views:', error)
+    })
+  }, [id])
 
   const handleAddComment = async (e) => {
     e.preventDefault()
@@ -244,7 +615,15 @@ export default function Watch(){
   }
 
   const videoOwner = resolveOwnerData(video)
-  const hoverCue = getCueAtTime(hoverTimeSec)
+  const resolvedVttUrl =
+    resolveMediaUrl(storyboard?.vttUrl) ||
+    resolveMediaUrl(video?.storyboard?.vttUrl) ||
+    resolveMediaUrl(video?.storyboardVttUrl)
+  const storyboardState =
+    storyboard?.status ||
+    video?.storyboard?.status ||
+    video?.storyboardStatus ||
+    'none'
   const ownerName = videoOwner.fullName || videoOwner.username || 'Unknown creator'
   const ownerAvatar = videoOwner.avatar
   const ownerUsername = videoOwner.username
@@ -390,57 +769,21 @@ export default function Watch(){
       <div className="lg:col-span-2">
         {/* Video Player */}
         <div className="bg-black rounded-lg overflow-hidden mb-6">
-          <video 
-            ref={videoRef}
-            controls 
-            src={video.videoFile} 
-            className="w-full h-[480px] bg-black"
-            onPlay={() => videoService.incrementViews(id)}
-            onTimeUpdate={handleTimeUpdate}
-            onLoadedMetadata={handleLoadedMetadata}
+          <StoryboardVideoPlayer
+            key={id}
+            mediaKey={id}
+            src={resolveMediaUrl(video.videoFile)}
+            vttUrl={resolvedVttUrl}
+            poster={resolveMediaUrl(video.thumbnail)}
+            cues={Array.isArray(storyboard?.cues) ? storyboard.cues : []}
+            durationSec={Number(video?.duration) || 0}
+            onFirstPlay={handleFirstPlay}
           />
-          {storyboardReady && (
-            <div className="px-4 pt-3 pb-4 border-t border-white/10 bg-[#0f141a]">
-              <div
-                ref={seekBarRef}
-                className="relative h-12 cursor-pointer"
-                onMouseMove={handleSeekMouseMove}
-                onMouseLeave={handleSeekMouseLeave}
-                onClick={handleSeekClick}
-              >
-                <div className="absolute left-0 right-0 bottom-0 h-2 rounded-full bg-white/20">
-                  <div
-                    className="h-full rounded-full bg-[#39FF14]"
-                    style={{ width: `${currentProgressPercent}%` }}
-                  />
-                </div>
-
-                {showHoverPreview && hoverCue && (
-                  <div
-                    className="absolute bottom-4 -translate-x-1/2 pointer-events-none z-20"
-                    style={{ left: `${hoverPercent}%` }}
-                  >
-                    <div
-                      className="rounded-md border border-white/20 shadow-[0_12px_28px_rgba(0,0,0,0.5)] bg-black"
-                      style={{
-                        width: `${hoverCue.w}px`,
-                        height: `${hoverCue.h}px`,
-                        backgroundImage: `url(${hoverCue.url})`,
-                        backgroundRepeat: 'no-repeat',
-                        backgroundPosition: `-${hoverCue.x}px -${hoverCue.y}px`,
-                      }}
-                    />
-                    <p className="text-[11px] text-center text-white mt-1">{formatClock(hoverTimeSec)}</p>
-                  </div>
-                )}
-              </div>
-              <div className="mt-1 flex justify-between text-xs text-white/70">
-                <span>{formatClock(currentTimeSec)}</span>
-                <span>{formatClock(durationSec || video.duration || 0)}</span>
-              </div>
-            </div>
-          )}
         </div>
+        <p className="text-xs text-white/65 mb-4">
+          Storyboard status: <span className="text-white">{storyboardState}</span>
+          {resolvedVttUrl ? ' | VTT URL present' : ' | no VTT URL for this video'}
+        </p>
 
         {/* Video Info */}
         <div className="bg-[#1C2128]/95 border border-white/10 rounded-lg shadow-[0_18px_40px_rgba(0,0,0,0.35)] p-6 mb-6">
@@ -715,3 +1058,4 @@ export default function Watch(){
     </div>
   )
 }
+

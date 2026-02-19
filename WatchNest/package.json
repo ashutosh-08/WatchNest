@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "vite --host 0.0.0.0 --port 5173 --strictPort",
     "build": "vite build",
     "preview": "vite preview",
     "lint": "eslint src"
@@ -12,6 +12,7 @@
   "dependencies": {
     "axios": "^1.6.0",
     "framer-motion": "^11.11.17",
+    "plyr": "^3.8.4",
     "project": "file:..",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
@@ -28,4 +29,3 @@
     "vite": "^5.2.0"
   }
 }
-

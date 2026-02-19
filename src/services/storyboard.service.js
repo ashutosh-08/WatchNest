@@ -1,4 +1,5 @@
 import fs from "fs/promises";
+import fsSync from "fs";
 import os from "os";
 import path from "path";
 import { spawn } from "child_process";
@@ -40,13 +41,43 @@ const runCommand = (command, args) =>
         });
     });
 
-const ensureFfmpegAvailable = async () => {
-    await runCommand("ffmpeg", ["-version"]);
+const resolveFfmpegPath = () => {
+    const envPath = process.env.FFMPEG_PATH;
+    if (envPath && fsSync.existsSync(envPath)) return envPath;
+
+    const localAppData = process.env.LOCALAPPDATA || "";
+    const absoluteCandidatePaths = [
+        path.join(localAppData, "Microsoft", "WinGet", "Links", "ffmpeg.exe"),
+        path.join(process.env.ProgramFiles || "", "ffmpeg", "bin", "ffmpeg.exe"),
+        path.join(
+            localAppData,
+            "Microsoft",
+            "WinGet",
+            "Packages",
+            "Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe",
+            "ffmpeg-8.0.1-full_build",
+            "bin",
+            "ffmpeg.exe"
+        ),
+    ].filter(Boolean);
+
+    for (const candidate of absoluteCandidatePaths) {
+        if (fsSync.existsSync(candidate)) {
+            return candidate;
+        }
+    }
+    return "ffmpeg";
 };
 
-const generateSpriteSheets = async ({ sourceVideoUrl, intervalSec, outputDir }) => {
+const ensureFfmpegAvailable = async () => {
+    const ffmpegBin = resolveFfmpegPath();
+    await runCommand(ffmpegBin, ["-version"]);
+    return ffmpegBin;
+};
+
+const generateSpriteSheets = async ({ ffmpegBin, sourceVideoUrl, intervalSec, outputDir }) => {
     const outputPattern = path.join(outputDir, "sprite-%03d.jpg");
-    await runCommand("ffmpeg", [
+    await runCommand(ffmpegBin, [
         "-y",
         "-i",
         sourceVideoUrl,
@@ -94,8 +125,9 @@ const processStoryboardJob = async ({ videoId, sourceVideoUrl, intervalSec = 5, 
     const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), `watchnest-storyboard-${videoId}-`));
 
     try {
-        await ensureFfmpegAvailable();
+        const ffmpegBin = await ensureFfmpegAvailable();
         const spritePaths = await generateSpriteSheets({
+            ffmpegBin,
             sourceVideoUrl,
             intervalSec,
             outputDir,

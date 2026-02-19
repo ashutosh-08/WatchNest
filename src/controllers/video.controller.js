@@ -53,6 +53,77 @@ const getValidatedVideoId = (VideoID) => {
     return VideoID;
 };
 
+const parseVttTimeToSeconds = (value) => {
+    const parts = String(value || "").trim().split(":");
+    if (parts.length < 3) return NaN;
+    const hh = Number(parts[0] || 0);
+    const mm = Number(parts[1] || 0);
+    const ss = Number(parts[2] || 0);
+    if (![hh, mm, ss].every(Number.isFinite)) return NaN;
+    return hh * 3600 + mm * 60 + ss;
+};
+
+const parseStoryboardCuesFromVtt = (vttText, vttUrl) => {
+    const blocks = String(vttText || "")
+        .split(/\r?\n\r?\n/)
+        .map((block) => block.trim())
+        .filter(Boolean);
+
+    const cues = [];
+    for (const block of blocks) {
+        const lines = block
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter(Boolean);
+
+        const timeLine = lines.find((line) => line.includes("-->"));
+        if (!timeLine) continue;
+        const [startRaw, endRaw] = timeLine.split("-->").map((item) => item.trim());
+        const start = parseVttTimeToSeconds(startRaw);
+        const end = parseVttTimeToSeconds(endRaw);
+        if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
+
+        const imageLine = lines.find((line) => !line.includes("-->") && !/^WEBVTT/i.test(line));
+        if (!imageLine) continue;
+
+        const [rawUrl, rawCoords] = imageLine.split("#xywh=");
+        let resolvedUrl = rawUrl;
+        try {
+            resolvedUrl = new URL(rawUrl, vttUrl).toString();
+        } catch {
+            resolvedUrl = rawUrl;
+        }
+
+        const [x = "0", y = "0", w = "160", h = "90"] = String(rawCoords || "")
+            .split(",")
+            .map((item) => item.trim());
+
+        cues.push({
+            start,
+            end,
+            url: resolvedUrl,
+            x: Number(x) || 0,
+            y: Number(y) || 0,
+            w: Number(w) || 160,
+            h: Number(h) || 90,
+        });
+    }
+    return cues;
+};
+
+const loadStoryboardCues = async (vttUrl) => {
+    if (!vttUrl) return [];
+    try {
+        const response = await fetch(vttUrl);
+        if (!response.ok) return [];
+        const text = await response.text();
+        return parseStoryboardCuesFromVtt(text, vttUrl);
+    } catch (error) {
+        console.error("[storyboard] failed to load cues", error);
+        return [];
+    }
+};
+
 // Upload Video on App
 const UploadVideo = asyncHandler(async (req, res) => {
     // Get data from body
@@ -464,8 +535,20 @@ const getVideoStoryboard = asyncHandler(async (req, res) => {
     if (!video) throw new ApiError(404, "Video not found!");
 
     const normalized = normalizeVideoMedia(video);
+    const cues =
+        normalized?.storyboard?.status === "ready" && normalized?.storyboard?.vttUrl
+            ? await loadStoryboardCues(normalized.storyboard.vttUrl)
+            : [];
+
     return res.status(200).json(
-        new ApiResponse(200, normalized.storyboard, "Storyboard status fetched successfully!")
+        new ApiResponse(
+            200,
+            {
+                ...normalized.storyboard,
+                cues,
+            },
+            "Storyboard status fetched successfully!"
+        )
     );
 });
 

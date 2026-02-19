@@ -6,16 +6,26 @@ const toHttps = (url) => {
     return url.replace(/^http:\/\//i, "https://");
 };
 
-// Configuration
-cloudinary.config({ 
-    cloud_name: process.env.CLOUDINARY_CLOUD_NAME, 
-    api_key: process.env.CLOUDINARY_API_KEY, 
-    api_secret: process.env.CLOUDINARY_API_SECRET 
-});
+const ensureCloudinaryConfigured = () => {
+    const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
+    const apiKey = process.env.CLOUDINARY_API_KEY;
+    const apiSecret = process.env.CLOUDINARY_API_SECRET;
+
+    if (!cloudName || !apiKey || !apiSecret) {
+        throw new Error("Cloudinary env vars missing: CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET");
+    }
+
+    cloudinary.config({
+        cloud_name: cloudName,
+        api_key: apiKey,
+        api_secret: apiSecret,
+    });
+};
 
 const uploadOnCloudinary = async (localFilePath) => {
     try {
         if (!localFilePath) return null;
+        ensureCloudinaryConfigured();
         
         // Upload the file on cloudinary
         const response = await cloudinary.uploader.upload(localFilePath, {
